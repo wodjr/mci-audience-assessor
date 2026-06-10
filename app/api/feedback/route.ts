@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { put, del, head, getDownloadUrl } from '@vercel/blob'
+import { put, del, list } from '@vercel/blob'
 import {
   ParticipantResponse,
   FeedbackAggregation,
@@ -8,18 +8,17 @@ import {
 } from '@/types/feedback'
 
 function blobPath(sessionId: string) {
-  return `sessions/${encodeURIComponent(sessionId)}.json`
+  return `sessions/${sessionId.replace(/[^a-zA-Z0-9._-]/g, '_')}.json`
 }
 
 async function readResponses(sessionId: string): Promise<ParticipantResponse[]> {
   try {
-    const pathname = blobPath(sessionId)
-    const info = await head(pathname).catch(() => null)
-    if (!info) return []
-    const url = await getDownloadUrl(pathname)
-    const res = await fetch(url)
+    const { blobs } = await list({ prefix: blobPath(sessionId), limit: 1 })
+    if (blobs.length === 0) return []
+    // Public blob — fetch the URL directly, no auth needed
+    const res = await fetch(blobs[0].url, { cache: 'no-store' })
     if (!res.ok) return []
-    return await res.json() as ParticipantResponse[]
+    return (await res.json()) as ParticipantResponse[]
   } catch {
     return []
   }
@@ -27,7 +26,7 @@ async function readResponses(sessionId: string): Promise<ParticipantResponse[]> 
 
 async function writeResponses(sessionId: string, responses: ParticipantResponse[]) {
   await put(blobPath(sessionId), JSON.stringify(responses), {
-    access: 'private',
+    access: 'public',
     contentType: 'application/json',
     allowOverwrite: true,
   })
@@ -62,7 +61,10 @@ export async function DELETE(req: NextRequest) {
   if (!sessionId) {
     return NextResponse.json({ error: 'Missing session param' }, { status: 400 })
   }
-  await del(blobPath(sessionId)).catch(() => null)
+  const { blobs } = await list({ prefix: blobPath(sessionId), limit: 1 })
+  if (blobs.length > 0) {
+    await del(blobs[0].url)
+  }
   return NextResponse.json({ success: true })
 }
 

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
+import { put, del, head, getDownloadUrl } from '@vercel/blob'
 import {
   ParticipantResponse,
   FeedbackAggregation,
@@ -6,15 +7,38 @@ import {
   ParticipantObservations,
 } from '@/types/feedback'
 
-// In-memory store — works within a single serverless function instance (demo use).
-const store = new Map<string, ParticipantResponse[]>()
+function blobPath(sessionId: string) {
+  return `sessions/${encodeURIComponent(sessionId)}.json`
+}
+
+async function readResponses(sessionId: string): Promise<ParticipantResponse[]> {
+  try {
+    const pathname = blobPath(sessionId)
+    const info = await head(pathname).catch(() => null)
+    if (!info) return []
+    const url = await getDownloadUrl(pathname)
+    const res = await fetch(url)
+    if (!res.ok) return []
+    return await res.json() as ParticipantResponse[]
+  } catch {
+    return []
+  }
+}
+
+async function writeResponses(sessionId: string, responses: ParticipantResponse[]) {
+  await put(blobPath(sessionId), JSON.stringify(responses), {
+    access: 'private',
+    contentType: 'application/json',
+    allowOverwrite: true,
+  })
+}
 
 export async function GET(req: NextRequest) {
   const sessionId = req.nextUrl.searchParams.get('session')
   if (!sessionId) {
     return NextResponse.json({ error: 'Missing session param' }, { status: 400 })
   }
-  const responses = store.get(sessionId) ?? []
+  const responses = await readResponses(sessionId)
   return NextResponse.json(aggregate(sessionId, responses))
 }
 
@@ -28,8 +52,8 @@ export async function POST(req: NextRequest) {
     id: crypto.randomUUID(),
     submittedAt: new Date().toISOString(),
   }
-  const existing = store.get(body.sessionId) ?? []
-  store.set(body.sessionId, [...existing, response])
+  const existing = await readResponses(body.sessionId)
+  await writeResponses(body.sessionId, [...existing, response])
   return NextResponse.json({ success: true, id: response.id }, { status: 201 })
 }
 
@@ -38,7 +62,7 @@ export async function DELETE(req: NextRequest) {
   if (!sessionId) {
     return NextResponse.json({ error: 'Missing session param' }, { status: 400 })
   }
-  store.delete(sessionId)
+  await del(blobPath(sessionId)).catch(() => null)
   return NextResponse.json({ success: true })
 }
 
